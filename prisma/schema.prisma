@@ -28,9 +28,10 @@ model Message {
 }
 
 model Instance {
-  id       String @id @default(uuid())
-  phone    String?
-  username String @unique
-  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId   String
+    id        String   @id @default(uuid())
+    phone     String?
+    username  String   @unique
+    status    String   @default("offline") // or other relevant statuses
+    user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+    userId    String
 }

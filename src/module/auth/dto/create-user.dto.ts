@@ -15,5 +15,5 @@ export class CreateUserDto {
 
   @IsString()
   @Validate(MatchPassword, ['password'])
-  confirmPassword: string;
+  confirmpassword: string;
 }

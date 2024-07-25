@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { envValidationSchema } from './env.validation';
 import { ConfigModule } from '@nestjs/config'
 import { AuthModule } from './module/auth/auth.module';
+import { WhatsappModule } from './module/whatsapp/whatsapp.module';
 
 @Module({
     imports: [
@@ -9,7 +10,8 @@ import { AuthModule } from './module/auth/auth.module';
             validationSchema: envValidationSchema,
             isGlobal: true, // Make the ConfigService globally available
         }),
-        AuthModule
+        AuthModule,
+        WhatsappModule
     ],
 })
 

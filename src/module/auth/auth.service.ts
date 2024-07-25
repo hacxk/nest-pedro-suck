@@ -21,37 +21,50 @@ export class AuthService {
             const errorMessages = errors.map(err => `${err.property}: ${Object.values(err.constraints).join(', ')}`);
             throw new BadRequestException(`Validation failed: ${errorMessages.join(', ')}`);
         }
-        if (userDto.password !== userDto.confirmPassword) {
+        if (userDto.password !== userDto.confirmpassword) {
             throw new BadRequestException('Passwords do not match');
         }
         const existingUser = await this.userRepository.findByEmail(userDto.email);
         if (existingUser) {
             throw new BadRequestException('Email already in use');
         }
-        const hashedPassword = await hash(userDto.password, 10);
-        const newUser = await this.userRepository.create({
-            ...userDto,
-            password: hashedPassword,
-        });
-        return { message: 'User registered successfully', user: newUser };
+        try {
+            const hashedPassword = await hash(createUserDto.password, 10);
+            const newUser = await this.userRepository.create({
+                ...createUserDto,
+                password: hashedPassword,
+            });
+            return { message: 'User registered successfully', user: newUser };
+        } catch (error) {
+            if (error.code === 'P2002') {
+                throw new BadRequestException('User already exists');
+            } else {
+                throw new BadRequestException('Signup failed. Please try again later.');
+            }
+        }
     }
 
-    async validateUser(email: string, password: string): Promise<any> {
+    async validateUser(email: string, password: string) {
         const user = await this.userRepository.findByEmail(email);
-        if (!user || !(await compare(password, user.password))) {
-            return null;
+        if (!user) {
+            throw new UnauthorizedException('Invalid credentials');
+        }
+        const isValidPassword = await compare(password, user.password);
+        if (!isValidPassword) {
+            throw new UnauthorizedException('Invalid credentials');
         }
         return user;
     }
 
     async login(loginUserDto: LoginUserDto) {
-        const loginDto = plainToInstance(LoginUserDto, loginUserDto);
-        const errors = await validate(loginDto);
+        const userDto = plainToInstance(LoginUserDto, loginUserDto);
+        const errors = await validate(userDto);
         if (errors.length > 0) {
             const errorMessages = errors.map(err => `${err.property}: ${Object.values(err.constraints).join(', ')}`);
             throw new BadRequestException(`Validation failed: ${errorMessages.join(', ')}`);
         }
-        const payload = { email: loginDto.email, sub: loginDto.password };
+        const user = await this.validateUser(userDto.email, userDto.password);
+        const payload = { email: user.email, sub: user.id };
         const token = this.jwtService.sign(payload);
         return { message: 'Login successful', token };
     }
