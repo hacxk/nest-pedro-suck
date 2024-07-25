@@ -58,6 +58,73 @@ $ npm run test:e2e
 $ npm run test:cov
 ```
 
+**Instant Messaging API**
+
+This API enables real-time communication through WhatsApp, leveraging the Baileys library for seamless integration. Authentication is handled using JWT tokens, ensuring secure access to user-specific instances and actions.
+
+**Table of Contents**
+
+-   [Authentication](#authentication)
+    -   [/auth/signup](#authsignup)
+    -   [/auth/login](#authlogin)
+-   [WhatsApp Instance Management](#whatsapp-instance-management)
+    -   [/whatsapp/auth](#whatsappauth)
+    -   [/whatsapp/auth/status/:email](#whatsappauthstatusemail)
+    -   [/whatsapp/instance-close](#whatsappinstance-close)
+-   [Messaging](#messaging)
+    -   [/instant-messaging/:token](#instant-messagingtoken)
+
+**Authentication**
+
+*   **`/auth/signup`** (POST)
+    *   **Purpose:** Create a new user account.
+    *   **Request Body:** `CreateUserDto` (email, password)
+    *   **Success Response:** HTTP 201 (Created)
+
+*   **`/auth/login`** (POST)
+    *   **Purpose:** Authenticate and obtain a JWT token.
+    *   **Request Body:** `LoginUserDto` (email, password)
+    *   **Success Response:** HTTP 200 (OK), JWT token in the body
+
+**WhatsApp Instance Management**
+
+*   **`/whatsapp/auth`** (POST)
+    *   **Purpose:** Authenticate a user and initiate a WhatsApp connection. This generates a QR code if needed for initial device linking.
+    *   **Request Body:** `instanceDto` (token)
+    *   **Success Response:** HTTP 200 (OK), QR code data URL or success message
+
+*   **`/whatsapp/auth/status/:email`** (GET)
+    *   **Purpose:** Check the connection status of a WhatsApp instance associated with a user's email.
+    *   **Path Parameter:** `email` (user's email address)
+    *   **Success Response:** HTTP 200 (OK), status object (e.g., { status: "connected" })
+
+*   **`/whatsapp/instance-close`** (POST)
+    *   **Purpose:** Close the WhatsApp socket connection associated with the authenticated user.
+    *   **Request Body:** `{ email, token }` (user's email and JWT token)
+    *   **Success Response:** HTTP 200 (OK)
+
+**Messaging**
+
+*   **`/instant-messaging/:token`** (POST)
+    *   **Purpose:** Send a message to a WhatsApp contact.
+    *   **Path Parameter:** `token` (JWT token)
+    *   **Request Body:** `SendMessageDto` (jid, message)
+        *   `jid`: WhatsApp ID of the recipient
+        *   `message`: Message content (text message currently supported)
+    *   **Success Response:** HTTP 200 (OK), object indicating success or Baileys response object
+
+**Example Usage (Sending a Message)**
+
+```bash
+POST /instant-messaging/YOUR_JWT_TOKEN
+Content-Type: application/json
+
+{
+    "jid": "RECIPIENT_PHONE_NUMBER@s.whatsapp.net",
+    "message": { "text": "Hello from the API!" }
+}
+```
+
 ## Support
 
 Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).

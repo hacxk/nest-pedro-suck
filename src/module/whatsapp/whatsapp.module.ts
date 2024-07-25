@@ -18,5 +18,6 @@ import { JwtModule } from '@nestjs/jwt';
   ],
   providers: [WhatsappService, PrismaService],
   controllers: [WhatsappController],
+  exports: [WhatsappService]
 })
 export class WhatsappModule {}

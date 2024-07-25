@@ -3,6 +3,7 @@ import { envValidationSchema } from './env.validation';
 import { ConfigModule } from '@nestjs/config'
 import { AuthModule } from './module/auth/auth.module';
 import { WhatsappModule } from './module/whatsapp/whatsapp.module';
+import { MessageModule } from './module/messaging/message.module';
 
 @Module({
     imports: [
@@ -11,7 +12,8 @@ import { WhatsappModule } from './module/whatsapp/whatsapp.module';
             isGlobal: true, // Make the ConfigService globally available
         }),
         AuthModule,
-        WhatsappModule
+        WhatsappModule,
+        MessageModule
     ],
 })
 

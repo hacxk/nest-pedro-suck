@@ -18,6 +18,10 @@ export class WhatsappService {
     private socketStatus = new Map<string, 'online' | 'offline'>();
     private explicitlyClosedSockets = new Set<string>();
 
+    getSocket(email: string): WASocket | undefined {
+        return this.sockets.get(email);
+    }
+
     private readonly redisConfig = {
         password: this.configService.get<string>('REDIS_PASSWORD'),
         host: this.configService.get<string>('REDIS_HOST'),
@@ -29,7 +33,7 @@ export class WhatsappService {
     constructor(
         private readonly configService: ConfigService,
         private readonly prisma: PrismaService
-    ) {}
+    ) { }
 
     private async createSocket(email: string): Promise<WASocket | string> {
         if (this.sockets.has(email) && this.socketStatus.get(email) === 'online') {
@@ -73,7 +77,7 @@ export class WhatsappService {
         }
 
         if (update.connection === 'close') {
-            const shouldReconnect = 
+            const shouldReconnect =
                 (update.lastDisconnect?.error as any)?.output?.statusCode !== DisconnectReason.loggedOut
                 && !this.explicitlyClosedSockets.has(email);
 
