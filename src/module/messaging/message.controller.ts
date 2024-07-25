@@ -14,17 +14,10 @@ export class MessageController {
     @Body(ValidationPipe) messageData: SendMessageDto
   ): Promise<{ success: boolean; message: string } | object> {
     try {
-      const content: AnyMessageContent = this.convertToAnyMessageContent(messageData.message);
+      const content: AnyMessageContent = this.messagingService.convertToAnyMessageContent(messageData.message);
       return await this.messagingService.sendMessage(token, messageData.jid, content);
     } catch (error) {
       return { success: false, message: 'Failed to send message' };
     }
-  }
-
-  private convertToAnyMessageContent(message: SendMessageDto['message']): AnyMessageContent {
-    if ('text' in message) {
-      return { text: message.text };
-    }
-    throw new Error('Invalid message format');
   }
 }

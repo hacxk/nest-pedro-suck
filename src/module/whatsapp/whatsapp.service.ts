@@ -1,26 +1,28 @@
 import { Injectable, Logger, NotFoundException, InternalServerErrorException } from '@nestjs/common';
-import makeWASocket, { ConnectionState, WASocket, DisconnectReason, BaileysEventEmitter } from '@whiskeysockets/baileys';
+import makeWASocket, { ConnectionState, WASocket, DisconnectReason } from '@whiskeysockets/baileys';
 import { useRedisAuthState } from 'redis-baileys';
 import { ConfigService } from '@nestjs/config';
 import * as qrcode from 'qrcode';
 import { PrismaService } from 'src/shared/prisma/prisma.service';
 import { Instance } from '@prisma/client';
+import { Subject, Observable } from 'rxjs';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
-interface GetQrCodeParams {
-    email: string;
+interface QrCodeData {
+    qr: string;
+    timestamp: number;
+}
+
+interface SocketData {
+    socket: WASocket;
+    qrSubject: Subject<QrCodeData>;
+    statusSubject: Subject<string>;
 }
 
 @Injectable()
 export class WhatsappService {
-    private sockets = new Map<string, WASocket>();
-    private qrCodes = new Map<string, { qr: string; timestamp: number }>();
-    private eventEmitters = new Map<string, BaileysEventEmitter>();
-    private socketStatus = new Map<string, 'online' | 'offline'>();
+    private sockets = new Map<string, SocketData>();
     private explicitlyClosedSockets = new Set<string>();
-
-    getSocket(email: string): WASocket | undefined {
-        return this.sockets.get(email);
-    }
 
     private readonly redisConfig = {
         password: this.configService.get<string>('REDIS_PASSWORD'),
@@ -32,213 +34,173 @@ export class WhatsappService {
 
     constructor(
         private readonly configService: ConfigService,
-        private readonly prisma: PrismaService
+        private readonly prisma: PrismaService,
+        private readonly eventEmitter: EventEmitter2
     ) { }
 
-    private async createSocket(email: string): Promise<WASocket | string> {
-        if (this.sockets.has(email) && this.socketStatus.get(email) === 'online') {
-            return 'Already Socket Created!';
+    async getOrCreateSocket(id: string): Promise<SocketData> {
+        if (this.sockets.has(id)) {
+            return this.sockets.get(id);
         }
 
-        const { state, saveCreds } = await this.getAuthState(email);
+        const { state, saveCreds } = await this.getAuthState(id);
         const socket = makeWASocket({
             auth: state,
             printQRInTerminal: true,
             mobile: false,
         });
 
-        await this.createInstanceForUser(email, socket.user.id);
-        this.sockets.set(email, socket);
-        this.eventEmitters.set(email, socket.ev);
-        this.socketStatus.set(email, 'offline');
+        const qrSubject = new Subject<QrCodeData>();
+        const statusSubject = new Subject<string>();
+
+        const socketData: SocketData = { socket, qrSubject, statusSubject };
+        this.sockets.set(id, socketData);
 
         socket.ev.on('creds.update', saveCreds);
         socket.ev.on('connection.update', (update: Partial<ConnectionState>) =>
-            this.handleConnectionUpdate(email, update)
+            this.handleConnectionUpdate(id, update)
         );
 
-        return socket;
+        const userId = await this.getUserIdForInstance(id); // Assuming you have a method to get the userId
+        await this.createOrUpdateInstance(id, socket.user?.id, userId);
+
+        return socketData;
     }
 
-    private async getAuthState(email: string) {
-        return useRedisAuthState(this.redisConfig, email);
+    private async getUserIdForInstance(id: string): Promise<string> {
+        try {
+            const instance = await this.prisma.instance.findUnique({
+                where: { id },
+                select: { userId: true },
+            });
+            if (!instance || !instance.userId) {
+                throw new NotFoundException(`No user found for instance id: ${id}`);
+            }
+            return instance.userId;
+        } catch (error) {
+            this.logger.error(`Failed to get userId for instance id: ${id}`, error);
+            throw new InternalServerErrorException('Failed to get userId for instance', { cause: error });
+        }
     }
 
-    private async handleConnectionUpdate(email: string, update: Partial<ConnectionState>) {
-        const user = await this.prisma.user.findUnique({ where: { email } });
-        if (!user) return;
 
-        const instance = await this.prisma.instance.findFirst({ where: { userId: user.id } });
-        if (!instance) return;
+    private async getAuthState(id: string) {
+        return useRedisAuthState(this.redisConfig, id);
+    }
+
+    private async handleConnectionUpdate(id: string, update: Partial<ConnectionState>) {
+        const socketData = this.sockets.get(id);
+        if (!socketData) {
+            this.logger.warn(`No socket data found for id: ${id}`);
+            return;
+        }
 
         if (update.qr) {
-            const qrCodeDataUrl = await qrcode.toDataURL(update.qr);
-            this.qrCodes.set(email, { qr: qrCodeDataUrl, timestamp: Date.now() });
+            try {
+                const qrCodeDataUrl = await qrcode.toDataURL(update.qr);
+                socketData.qrSubject.next({ qr: qrCodeDataUrl, timestamp: Date.now() });
+            } catch (error) {
+                this.logger.error(`Failed to generate QR code for id: ${id}`, error);
+            }
         }
 
         if (update.connection === 'close') {
             const shouldReconnect =
                 (update.lastDisconnect?.error as any)?.output?.statusCode !== DisconnectReason.loggedOut
-                && !this.explicitlyClosedSockets.has(email);
+                && !this.explicitlyClosedSockets.has(id);
 
             if (shouldReconnect) {
-                await this.reconnectSocket(email);
+                await this.reconnectSocket(id);
+            } else {
+                await this.updateInstanceStatus(id, 'offline');
+                socketData.statusSubject.next('offline');
             }
-
-            await this.updateInstanceStatus(email, 'offline');
-            this.socketStatus.set(email, 'offline');
         } else if (update.connection === 'open') {
-            this.logger.log(`Opened connection for ${email}`);
-            await this.updateInstanceStatus(email, 'online');
-            this.socketStatus.set(email, 'online');
+            this.logger.log(`Opened connection for id: ${id}`);
+            await this.updateInstanceStatus(id, 'online');
+            socketData.statusSubject.next('online');
+        }
+
+        this.eventEmitter.emit('whatsapp.connection.update', { id, status: update.connection });
+    }
+
+    private async updateInstanceStatus(id: string, status: 'online' | 'offline') {
+        try {
+            await this.prisma.instance.update({
+                where: { id },
+                data: { status },
+            });
+        } catch (error) {
+            this.logger.error(`Failed to update instance status for id: ${id}`, error);
         }
     }
 
-    private async updateInstanceStatus(email: string, status: 'online' | 'offline') {
-        const user = await this.prisma.user.findUnique({ where: { email } });
-        if (!user) throw new NotFoundException('User not found');
-
-        const instance = await this.prisma.instance.findFirst({ where: { userId: user.id } });
-        if (!instance) throw new NotFoundException('Instance not found');
-
-        await this.prisma.instance.update({
-            where: { id: instance.id },
-            data: { status },
-        });
-    }
-
-    private async reconnectSocket(email: string) {
-        this.logger.log(`Reconnecting socket for ${email}...`);
-        const socket = this.sockets.get(email);
-        if (!socket) {
-            throw new NotFoundException(`No socket found for ${email}. Cannot reconnect.`);
+    private async reconnectSocket(id: string) {
+        this.logger.log(`Reconnecting socket for id: ${id}`);
+        const socketData = this.sockets.get(id);
+        if (!socketData) {
+            throw new NotFoundException(`No socket found for id: ${id}. Cannot reconnect.`);
         }
 
         try {
-            await socket.end(new Error(`Reconnecting socket for ${email}...`));
-            this.sockets.delete(email);
-            this.eventEmitters.delete(email);
-            this.socketStatus.set(email, 'offline');
-            await this.createSocket(email);
-            this.logger.log(`Reconnected socket for ${email}`);
+            await socketData.socket.end(new Error(`Reconnecting socket for id: ${id}`));
+            this.sockets.delete(id);
+            await this.getOrCreateSocket(id);
+            this.logger.log(`Reconnected socket for id: ${id}`);
         } catch (error) {
-            this.logger.error(`Failed to reconnect socket for ${email}`, error);
+            this.logger.error(`Failed to reconnect socket for id: ${id}`, error);
             throw new InternalServerErrorException('Failed to reconnect socket', { cause: error });
         }
     }
 
-    async getQrCode(params: GetQrCodeParams): Promise<{ qrCodeDataUrl?: string; success: boolean; message: string }> {
-        const { email } = params;
-        const qrData = this.qrCodes.get(email);
-
-        if (qrData && Date.now() - qrData.timestamp < 60000) {
-            return { qrCodeDataUrl: qrData.qr, success: true, message: "QR Code already generated!" };
+    async closeSocket(id: string): Promise<void> {
+        const socketData = this.sockets.get(id);
+        if (!socketData) {
+            throw new NotFoundException(`No socket found for id: ${id}. Cannot close.`);
         }
 
         try {
-            const existingSocketResponse = await this.createSocket(email);
-            if (typeof existingSocketResponse === 'string') {
-                return { qrCodeDataUrl: undefined, success: false, message: existingSocketResponse };
-            }
+            await socketData.socket.end(new Error(`Closing socket for id: ${id}`));
+            this.sockets.delete(id);
+            this.explicitlyClosedSockets.add(id);
 
-            const socket = existingSocketResponse;
-            let qrCodeDataUrl: string | undefined;
-            let connectionOpened = false;
-
-            const handleQr = async (update: Partial<ConnectionState>) => {
-                if (update.qr) {
-                    try {
-                        qrCodeDataUrl = await qrcode.toDataURL(update.qr);
-                        socket.ev.off('connection.update', handleQr);
-                    } catch (err) {
-                        this.logger.error('Failed to generate QR code data URL.', err);
-                    }
-                } else if (update.connection === 'open') {
-                    connectionOpened = true;
-                    await this.updateInstanceStatus(email, 'online');
-                    socket.ev.off('connection.update', handleQr);
-                }
-            };
-
-            socket.ev.on('connection.update', handleQr);
-
-            const response = await new Promise<{ qrCodeDataUrl?: string; success: boolean; message: string }>(
-                (resolve, reject) => {
-                    const timeout = setTimeout(() => {
-                        socket.ev.off('connection.update', handleQr);
-                        if (!qrCodeDataUrl && !connectionOpened) {
-                            reject(new Error('Failed to receive QR code and connection not opened.'));
-                        } else {
-                            resolve({
-                                qrCodeDataUrl,
-                                success: true,
-                                message: qrCodeDataUrl ? "QR code generated successfully!" : "Connection opened successfully!",
-                            });
-                        }
-                    }, 60000);
-                }
-            );
-
-            return response;
-
+            await this.updateInstanceStatus(id, 'offline');
+            socketData.statusSubject.next('offline');
+            socketData.statusSubject.complete();
+            socketData.qrSubject.complete();
         } catch (error) {
-            this.logger.error('Failed to initialize socket or handle QR code.', error);
-            throw new InternalServerErrorException('Failed to initialize socket or handle QR code.', { cause: error });
+            this.logger.error(`Failed to close socket for id: ${id}`, error);
+            throw new InternalServerErrorException('Failed to close socket', { cause: error });
         }
     }
 
-    private async createInstanceForUser(email: string, number: string): Promise<Instance> {
-        const user = await this.prisma.user.findUnique({ where: { email } });
-        if (!user) {
-            throw new NotFoundException('User not found');
-        }
-        let instance = await this.prisma.instance.findFirst({ where: { userId: user.id } });
-        if (instance) {
-            return instance;
-        }
+    private async createOrUpdateInstance(id: string, number: string, userId: string): Promise<Instance> {
+        const phoneNumber = number?.split('@s.whatsapp.net')[0];
         try {
-            return await this.prisma.instance.create({
-                data: {
-                    phone: number.split('@s.whatsapp.net')[0],
-                    username: `instance_${user.id}`,
+            return await this.prisma.instance.upsert({
+                where: { id },
+                update: { phone: phoneNumber, status: 'offline' },
+                create: {
+                    id,
+                    phone: phoneNumber,
+                    username: `instance_${id}`,
                     status: 'offline',
-                    user: { connect: { id: user.id } },
+                    userId,
                 },
             });
         } catch (error) {
-            if (error.code === 'P2002') {
-                return null;
-            } else {
-                throw error;
-            }
+            this.logger.error(`Failed to create or update instance for id: ${id}`, error);
+            throw new InternalServerErrorException('Failed to create or update instance', { cause: error });
         }
     }
 
-    async closeSocket(email: string): Promise<void> {
-        const socket = this.sockets.get(email);
-        if (!socket) {
-            throw new NotFoundException(`No socket found for ${email}. Cannot close.`);
-        }
+    async getQrCodeObservable(id: string): Promise<Observable<QrCodeData>> {
+        const socketData = await this.getOrCreateSocket(id);
+        return socketData.qrSubject.asObservable();
+    }
 
-        try {
-            await socket.end(new Error(`Closing socket for ${email}...`));
-            this.sockets.delete(email);
-            this.eventEmitters.delete(email);
-            this.socketStatus.set(email, 'offline');
-            this.explicitlyClosedSockets.add(email);
-            const user = await this.prisma.user.findUnique({ where: { email } });
-            if (user) {
-                const instance = await this.prisma.instance.findFirst({ where: { userId: user.id } });
-                if (instance) {
-                    await this.prisma.instance.update({
-                        where: { id: instance.id },
-                        data: { status: 'offline' },
-                    });
-                }
-            }
-        } catch (error) {
-            this.logger.error(`Failed to close socket for ${email}`, error);
-            throw new InternalServerErrorException('Failed to close socket', { cause: error });
-        }
+    async getStatusObservable(id: string): Promise<Observable<string>> {
+        const socketData = await this.getOrCreateSocket(id);
+        return socketData.statusSubject.asObservable();
     }
 }

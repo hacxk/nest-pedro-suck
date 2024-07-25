@@ -4,9 +4,12 @@ import { WhatsappService } from './whatsapp.service';
 import { WhatsappController } from './whatsapp.controller';
 import { PrismaService } from 'src/shared/prisma/prisma.service';
 import { JwtModule } from '@nestjs/jwt';
+import { EventEmitter2, EventEmitterModule } from '@nestjs/event-emitter';
 
 @Module({
-  imports: [ConfigModule,
+  imports: [
+    EventEmitterModule,
+    ConfigModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -16,7 +19,7 @@ import { JwtModule } from '@nestjs/jwt';
       }),
   }),
   ],
-  providers: [WhatsappService, PrismaService],
+  providers: [WhatsappService, PrismaService, EventEmitter2],
   controllers: [WhatsappController],
   exports: [WhatsappService]
 })

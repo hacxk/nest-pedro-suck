@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { BullModule } from '@nestjs/bullmq';
 import { envValidationSchema } from './env.validation';
-import { ConfigModule } from '@nestjs/config'
 import { AuthModule } from './module/auth/auth.module';
 import { WhatsappModule } from './module/whatsapp/whatsapp.module';
 import { MessageModule } from './module/messaging/message.module';
@@ -9,12 +10,17 @@ import { MessageModule } from './module/messaging/message.module';
     imports: [
         ConfigModule.forRoot({
             validationSchema: envValidationSchema,
-            isGlobal: true, // Make the ConfigService globally available
+            isGlobal: true, 
+        }),
+        BullModule.forRoot({
+            connection: {
+                host: 'localhost',
+                port: 6379,
+            },
         }),
         AuthModule,
         WhatsappModule,
         MessageModule
     ],
 })
-
 export class AppModule { }

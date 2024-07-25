@@ -1,71 +1,98 @@
-import { Body, Controller, HttpCode, HttpStatus, Post, Get, Param, Query, Res, NotFoundException, UnauthorizedException } from '@nestjs/common';
-import { WhatsappService } from './whatsapp.service';
-import { instanceDto } from './dto/instanceDto';
-import { JwtService } from '@nestjs/jwt';
+import { Controller, Post, Get, Param, Res, Sse, UseGuards, UnauthorizedException, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { Response } from 'express';
+import { WhatsappService } from './whatsapp.service';
+import { JwtAuthGuard } from './guard/jwt-auth.guard';
+import { User } from './decorators/user.decorator';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
 import { PrismaService } from 'src/shared/prisma/prisma.service';
 
 @Controller('whatsapp')
+@UseGuards(JwtAuthGuard)
 export class WhatsappController {
     constructor(
         private readonly whatsappService: WhatsappService,
-        private readonly jwtService: JwtService,
         private readonly prisma: PrismaService
-    ) { }
+    ) {}
 
-    @Post('auth')
-    @HttpCode(HttpStatus.OK)
-    async authenticate(@Body() instanceData: instanceDto, @Res() res: Response) {
+    @Sse('qr-code/:id')
+    async streamQrCode(@Param('id') id: string, @User('id') authenticatedId: string): Promise<Observable<MessageEvent>> {
+        if (id !== authenticatedId) {
+            throw new UnauthorizedException('You can only access your own QR code');
+        }
+
         try {
-            const payload = await this.jwtService.verifyAsync(instanceData.token, {
-                secret: process.env.JWT_SECRET
-            });
-            const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
-            if (!user) throw new UnauthorizedException();
-            const { qrCodeDataUrl, success, message } = await this.whatsappService.getQrCode({ email: user.email }); // Use user's email from DB
-            if (message) {
-                res.status(HttpStatus.OK).json({ message, success });
+            const qrObservable = await this.whatsappService.getQrCodeObservable(id);
+            return qrObservable.pipe(
+                map(qrData => ({
+                    data: {
+                        qrCodeDataUrl: qrData.qr,
+                        timestamp: qrData.timestamp
+                    }
+                }) as MessageEvent)
+            );
+        } catch (error) {
+            throw new InternalServerErrorException('Failed to stream QR code', { cause: error });
+        }
+    }
+
+    @Sse('status/:id')
+    async streamStatus(@Param('id') id: string, @User('id') authenticatedId: string): Promise<Observable<MessageEvent>> {
+        if (id !== authenticatedId) {
+            throw new UnauthorizedException('You can only access your own status');
+        }
+
+        try {
+            const statusObservable = await this.whatsappService.getStatusObservable(id);
+            return statusObservable.pipe(
+                map(status => ({ data: { status } }) as MessageEvent)
+            );
+        } catch (error) {
+            throw new InternalServerErrorException('Failed to stream status', { cause: error });
+        }
+    }
+
+    @Post('close/:id')
+    async closeSocket(@Param('id') id: string, @User('id') authenticatedId: string, @Res() res: Response) {
+        if (id !== authenticatedId) {
+            throw new UnauthorizedException('You can only close your own socket');
+        }
+
+        try {
+            await this.whatsappService.closeSocket(id);
+            res.status(200).json({ message: 'Socket closed successfully.' });
+        } catch (error) {
+            if (error instanceof NotFoundException) {
+                res.status(404).json({ message: error.message });
             } else {
-                res.status(success ? HttpStatus.OK : HttpStatus.INTERNAL_SERVER_ERROR).json({ qrCodeDataUrl, message: success ? '' : 'Failed to generate QR code' });
+                res.status(500).json({ message: 'Failed to close socket.', error: error.message });
             }
-        } catch (error) {
-            res.status(HttpStatus.UNAUTHORIZED).json({ message: 'Invalid token' });
         }
     }
 
-    @Get('auth/status/:email')
-    async getConnectionStatus(@Param('email') email: string) {
-        const user = await this.prisma.user.findUnique({
-            where: { email }
-        });
-        if (!user) {
-            throw new NotFoundException('User not found');
+    @Get('instance/:id')
+    async getInstanceStatus(@Param('id') id: string, @User('id') authenticatedId: string) {
+        if (id !== authenticatedId) {
+            throw new UnauthorizedException('You can only access your own instance status');
         }
-        const instance = await this.prisma.instance.findFirst({
-            where: { userId: user.id },
-            include: { user: true }
-        });
-        if (!instance) {
-            throw new NotFoundException('Instance not found');
-        }
-        return { status: instance.status };
-    }
 
-    @Post('instance-close')
-    @HttpCode(HttpStatus.OK)
-    async closeSocket(@Body() { email, token }: { email: string; token: string }, @Res() res: Response) {
         try {
-            const payload = await this.jwtService.verifyAsync(token, {
-                secret: process.env.JWT_SECRET
+            const instance = await this.prisma.instance.findUnique({
+                where: { id },
+                select: { status: true, phone: true }
             });
-            const user = await this.prisma.user.findUnique({ where: { email } });
-            if (!user || user.id !== payload.sub) {
-                throw new UnauthorizedException();
+
+            if (!instance) {
+                throw new NotFoundException('Instance not found');
             }
-            await this.whatsappService.closeSocket(email); // Use the public method
-            res.status(HttpStatus.OK).json({ message: 'Socket closed successfully.' });
+
+            return instance;
         } catch (error) {
-            res.status(HttpStatus.UNAUTHORIZED).json({ message: 'Invalid token or socket closure failed.' });
+            if (error instanceof NotFoundException) {
+                throw error;
+            } else {
+                throw new InternalServerErrorException('Failed to fetch instance status', { cause: error });
+            }
         }
     }
 }
