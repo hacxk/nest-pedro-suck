@@ -1,25 +1,28 @@
-version: '3.8'  # Specify Docker Compose version
+version: '3.8'
 
 services:
-  app:
-    build: .  # Build the NestJS app image from the current directory
+  nest-app:
+    build: .
     ports:
-      - 3000:3000  # Expose the app on port 3000
+      - 3000:3000
+    environment:
+      DATABASE_URL: postgresql://postgres:hacxk@postgres:5432/whatsapp_db
+      REDIS_URL: redis://redis:6379
     depends_on:
       - postgres
       - redis
-    environment:
-      # Your environment variables (from .env) go here
+
   postgres:
-    image: postgres:14-alpine  # Use the official PostgreSQL image
+    image: postgres
     environment:
-      POSTGRES_USER: your_postgres_user
-      POSTGRES_PASSWORD: your_postgres_password
-      POSTGRES_DB: your_database_name
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: hacxk
+      POSTGRES_DB: whatsapp_db
     volumes:
-      - postgres-data:/var/lib/postgresql/data  # Persist database data
+      - postgres-data:/var/lib/postgresql/data
+
   redis:
-    image: redis:alpine  # Use the official Redis image
+    image: redis
 
 volumes:
-  postgres-data:  # Named volume for PostgreSQL data persistence
+  postgres-data:
