@@ -1,13 +1,14 @@
-import { Module } from "@nestjs/common";
-import { MessageController } from "./message.controller";
-import { MessagingService } from "./message.service";
+import { BullModule } from '@nestjs/bullmq';
+import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
-import { WhatsappModule } from "../whatsapp/whatsapp.module";
-import { PrismaService } from "src/shared/prisma/prisma.service";
-import { EventEmitterModule } from "@nestjs/event-emitter";
-import { MessageQueueProcessor } from "./queue/message.queue ";
-import { BullModule } from "@nestjs/bullmq";
+import { EventEmitterModule } from '@nestjs/event-emitter';
+
+import { WhatsappModule } from '../whatsapp/whatsapp.module';
+import { PrismaService } from '../../shared/prisma/prisma.service';
+import { MessageController } from './message.controller';
+import { MessagingService } from './message.service';
+import { MessageQueueProcessor } from './queue/message.queue ';
 
 @Module({
     imports: [
@@ -22,12 +23,22 @@ import { BullModule } from "@nestjs/bullmq";
                 signOptions: { expiresIn: '24h' },
             }),
         }),
-        BullModule.registerQueue({
-            name: 'message-queue',
+        BullModule.forRootAsync({ // Register using forRootAsync
+            imports: [ConfigModule],
+            inject: [ConfigService],
+            useFactory: async (configService: ConfigService) => ({
+                connection: {
+                    host: configService.get('REDIS_HOST'),
+                    port: +configService.get('REDIS_PORT'),
+                    password: configService.get('REDIS_PASSWORD'),
+                },
+            }),
+        }),
+        BullModule.registerQueue({ // Register the queue
+            name: 'message-queue', 
         }),
     ],
     controllers: [MessageController],
-    providers: [MessagingService, PrismaService, MessageQueueProcessor]
+    providers: [MessagingService, PrismaService, MessageQueueProcessor],
 })
-
-export class MessageModule { };
+export class MessageModule {}

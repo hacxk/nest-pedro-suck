@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 import { envValidationSchema } from './env.validation';
 import { AuthModule } from './module/auth/auth.module';
@@ -10,13 +10,18 @@ import { MessageModule } from './module/messaging/message.module';
     imports: [
         ConfigModule.forRoot({
             validationSchema: envValidationSchema,
-            isGlobal: true, 
+            isGlobal: true,
         }),
-        BullModule.forRoot({
-            connection: {
-                host: 'localhost',
-                port: 6379,
-            },
+        BullModule.forRootAsync({
+            imports: [ConfigModule],
+            useFactory: async (configService: ConfigService) => ({
+                connection: {
+                    host: configService.get('REDIS_HOST'),
+                    port: +configService.get('REDIS_PORT'),
+                    password: configService.get('REDIS_PASSWORD'),
+                },
+            }),
+            inject: [ConfigService],
         }),
         AuthModule,
         WhatsappModule,
